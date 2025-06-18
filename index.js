@@ -21,7 +21,7 @@ const PORT = process.env.PORT || 5000;
 /* ------------------------  ⛑️  MIDDLEWARE  ------------------------ */
 app.use(
   cors({
-    origin: 'http://localhost:3000',
+    origin: ['http://localhost:3000', 'https://jssia.vercel.app/'],
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'username', 'password', 'Authorization'],
