@@ -6,14 +6,13 @@ const mongoose  = require('mongoose');
 const multer    = require('multer');
 const path      = require('path');
 const fs        = require('fs');
-const { exec }  = require('child_process');
-const sharp = require('sharp');
+const sharp     = require('sharp');
 
 const Feedback       = require('./models/Feedback');
 const Subject        = require('./models/Subject');
 const Paper          = require('./models/Paper');
 const subjectRoutes  = require('./routes/subjectRoutes');
-const adminRoutes    = require('./routes/admin');  
+const adminRoutes    = require('./routes/admin');
 
 const app  = express();
 const PORT = process.env.PORT || 5000;
@@ -26,7 +25,7 @@ app.use(
   })
 );
 app.options('*', cors());
-app.use(express.json()); 
+app.use(express.json());
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 /* ------------------------  📦  FILE UPLOADS  ------------------------ */
@@ -45,7 +44,8 @@ app.use('/api/subjects', subjectRoutes);
 app.get('/', (req, res) => {
   res.send('✅ JSS IA Backend is live!');
 });
-/* --- Upload Paper (with PDF Compression) -------------------------- */
+
+/* --- Upload Paper (PDF Compression Removed) ----------------------- */
 app.post('/upload', upload.array('files'), async (req, res) => {
   const { semester, description } = req.body;
   const subject = req.body.subject?.trim().toLowerCase();
@@ -73,37 +73,19 @@ app.post('/upload', upload.array('files'), async (req, res) => {
         const afterSize = fs.statSync(tmp).size;
 
         if (afterSize < beforeSize) {
-          fs.renameSync(tmp, inputPath); // keep compressed
+          fs.renameSync(tmp, inputPath);
           console.log(`🖼️  ${file.originalname}: ${beforeSize} → ${afterSize} bytes (saved)`);
         } else {
-          fs.unlinkSync(tmp);            // keep original
+          fs.unlinkSync(tmp);
           console.log(`🖼️  ${file.originalname}: ${beforeSize} → ${afterSize} bytes (discarded, larger)`);
         }
       }
 
-      /* ── PDF compression ── */
+      /* ── PDF (no compression, keep original) ── */
       if (ext === '.pdf') {
-        const tmp = inputPath.replace(/\.pdf$/i, '-compressed.pdf');
-        const cmd = `gswin64c -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 ` +
-                    `-dPDFSETTINGS=/ebook -dNOPAUSE -dQUIET -dBATCH ` +
-                    `-sOutputFile="${tmp}" "${inputPath}"`;
-
-        await new Promise((resolve, reject) =>
-          exec(cmd, err => (err ? reject(err) : resolve()))
-        );
-
-        const afterSize = fs.statSync(tmp).size;
-
-        if (afterSize < beforeSize) {
-          fs.renameSync(tmp, inputPath); // keep compressed
-          console.log(`📄 ${file.originalname}: ${beforeSize} → ${afterSize} bytes (saved)`);
-        } else {
-          fs.unlinkSync(tmp);            // keep original
-          console.log(`📄 ${file.originalname}: ${beforeSize} → ${afterSize} bytes (discarded, larger)`);
-        }
+        console.log(`📄 ${file.originalname}: PDF kept without compression (${beforeSize} bytes)`);
       }
 
-      /* push final (possibly‑compressed) file */
       filesArr.push({
         url: `/uploads/${file.filename}`,
         upvotes: 0,
@@ -115,16 +97,15 @@ app.post('/upload', upload.array('files'), async (req, res) => {
 
     res.status(201).json({
       success: true,
-      message: '✅ Uploaded (compressed when smaller)',
+      message: '✅ Uploaded (images compressed if smaller)',
       paper,
     });
 
   } catch (err) {
-    console.error('❌ Upload/compression error:', err);
+    console.error('❌ Upload error:', err);
     res.status(500).json({ success: false, message: '❌ Upload failed', error: err.message });
   }
 });
-
 
 /* --- Fetch Papers --------------------------------------------------- */
 app.get('/papers', async (req, res) => {
