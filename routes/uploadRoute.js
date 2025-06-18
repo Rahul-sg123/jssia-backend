@@ -5,9 +5,8 @@ const fs       = require('fs');
 const axios    = require('axios');
 const FormData = require('form-data');
 const sharp    = require('sharp');
-const { PDFDocument } = require('pdf-lib');
 const Paper    = require('../models/Paper');
-const mime     = require('mime-types');   // <‑‑ NEW
+const mime     = require('mime-types');
 
 const router = express.Router();
 
@@ -22,18 +21,18 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-/* ────────── Helpers ────────── */
+/* ────────── Image compression ────────── */
 async function compressImage(filePath, ext) {
   const outPath = ext === '.png'
     ? filePath.replace(/\.png$/i, '_compressed.png')
     : filePath.replace(/(\.\w+)$/, '_compressed.jpg');
 
   const original = fs.statSync(filePath).size;
-  const sharpPipe = sharp(filePath).resize({ width: 1080 });
+  const pipe = sharp(filePath).resize({ width: 1080 });
 
   ext === '.png'
-    ? await sharpPipe.png({ compressionLevel: 9 }).toFile(outPath)
-    : await sharpPipe.jpeg({ quality: 70 }).toFile(outPath);
+    ? await pipe.png({ compressionLevel: 9 }).toFile(outPath)
+    : await pipe.jpeg({ quality: 70 }).toFile(outPath);
 
   const compressed = fs.statSync(outPath).size;
   console.log(`🖼️  ${path.basename(filePath)} | ${original} → ${compressed} bytes`);
@@ -41,42 +40,29 @@ async function compressImage(filePath, ext) {
   return outPath;
 }
 
-async function compressPDF(filePath) {
-  const original = fs.statSync(filePath).size;
-  const pdfDoc   = await PDFDocument.load(fs.readFileSync(filePath));
-  const outDoc   = await PDFDocument.create();
-  const pages    = await outDoc.copyPages(pdfDoc, pdfDoc.getPageIndices());
-  pages.forEach(p => outDoc.addPage(p));
-  const compressedBuf = await outDoc.save();
-  const outPath  = filePath.replace(/\.pdf$/i, '_compressed.pdf');
-  fs.writeFileSync(outPath, compressedBuf);
-  const compressed = fs.statSync(outPath).size;
-  console.log(`📄 ${path.basename(filePath)} | ${original} → ${compressed} bytes`);
-  fs.unlinkSync(filePath);
-  return outPath;
-}
-
 /* ────────── Upload endpoint ────────── */
 router.post(
   '/upload',
-  upload.fields([{ name: 'files' }, { name: 'file' }]), // accepts "files" or "file"
+  upload.fields([{ name: 'files' }, { name: 'file' }]),
   async (req, res) => {
     const { subject, semester, description } = req.body;
     const allFiles = [...(req.files?.files || []), ...(req.files?.file || [])];
 
-    if (!allFiles.length) return res.status(400).json({ success: false, message: 'No files uploaded.' });
+    if (!allFiles.length) {
+      return res.status(400).json({ success: false, message: 'No files uploaded.' });
+    }
 
     try {
       const saved = [];
 
       for (const f of allFiles) {
         let ext = path.extname(f.originalname).toLowerCase();
-        if (!ext) ext = `.${mime.extension(f.mimetype) || ''}`;  // ensure ext
+        if (!ext) ext = `.${mime.extension(f.mimetype) || ''}`;
         let fp  = f.path;
 
         console.log(`🔍 Processing ${f.originalname} (ext ${ext}, mime ${f.mimetype})`);
 
-        /* Nudity check */
+        /* ── Nudity check for images ── */
         if (['.jpg', '.jpeg', '.png'].includes(ext)) {
           const form = new FormData();
           form.append('media', fs.createReadStream(fp));
@@ -97,13 +83,12 @@ router.post(
           }
         }
 
-        /* Compress */
+        /* ── Compress only images ── */
         if (['.jpg', '.jpeg', '.png'].includes(ext)) {
           console.log('📦 Compressing image…');
           fp = await compressImage(fp, ext);
         } else if (ext === '.pdf') {
-          console.log('📦 Compressing PDF…');
-          // fp = await compressPDF(fp);
+          console.log('ℹ️  Skipping PDF compression (stored as‑is)');
         } else {
           console.log('ℹ️  Keeping original:', f.originalname);
         }
@@ -115,7 +100,9 @@ router.post(
         });
       }
 
-      if (!saved.length) return res.status(400).json({ success: false, message: 'All files rejected.' });
+      if (!saved.length) {
+        return res.status(400).json({ success: false, message: 'All files rejected.' });
+      }
 
       const paper = await Paper.create({ subject, semester, description, files: saved });
       res.status(201).json({ success: true, paper });
