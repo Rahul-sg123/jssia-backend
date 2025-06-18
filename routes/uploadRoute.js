@@ -103,7 +103,7 @@ router.post(
           fp = await compressImage(fp, ext);
         } else if (ext === '.pdf') {
           console.log('📦 Compressing PDF…');
-          fp = await compressPDF(fp);
+          // fp = await compressPDF(fp);
         } else {
           console.log('ℹ️  Keeping original:', f.originalname);
         }
