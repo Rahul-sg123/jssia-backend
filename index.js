@@ -44,7 +44,9 @@ const upload = multer({ storage });
 /* ------------------------  🔗  ROUTES  ------------------------ */
 app.use('/admin', adminRoutes);
 app.use('/api/subjects', subjectRoutes);
-
+app.get('/', (req, res) => {
+  res.send('✅ JSS IA Backend is live!');
+});
 /* --- Upload Paper (with PDF Compression) -------------------------- */
 app.post('/upload', upload.array('files'), async (req, res) => {
   const { semester, description } = req.body;
