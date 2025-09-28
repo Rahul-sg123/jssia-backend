@@ -1,4 +1,3 @@
-require('dotenv').config();
 
 const express   = require('express');
 const cors      = require('cors');
@@ -7,12 +6,13 @@ const multer    = require('multer');
 const path      = require('path');
 const fs        = require('fs');
 const sharp     = require('sharp');
+const cloudinary = require('cloudinary').v2;
 
-const Feedback       = require('./models/Feedback');
-const Subject        = require('./models/Subject');
-const Paper          = require('./models/Paper');
-const subjectRoutes  = require('./routes/subjectRoutes');
-const adminRoutes    = require('./routes/admin');
+const Feedback = require('./models/Feedback');
+const Subject  = require('./models/Subject');
+const Paper    = require('./models/Paper');
+const subjectRoutes = require('./routes/subjectRoutes');
+const adminRoutes   = require('./routes/admin');
 
 const app  = express();
 const PORT = process.env.PORT || 5000;
@@ -28,7 +28,14 @@ app.options('*', cors());
 app.use(express.json());
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-/* ------------------------  📦  FILE UPLOADS  ------------------------ */
+/* ------------------------  ☁️  Cloudinary Config ------------------------ */
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key:    process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
+
+/* ------------------------  📦  MULTER STORAGE ------------------------ */
 const uploadDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
 
@@ -38,14 +45,12 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-/* ------------------------  🔗  ROUTES  ------------------------ */
+/* ------------------------  🔗  ROUTES ------------------------ */
 app.use('/admin', adminRoutes);
 app.use('/api/subjects', subjectRoutes);
-app.get('/', (req, res) => {
-  res.send('✅ JSS IA Backend is live!');
-});
+app.get('/', (req, res) => res.send('✅ JSS IA Backend is live!'));
 
-/* --- Upload Paper (PDF Compression Removed) ----------------------- */
+/* ------------------------  📄  UPLOAD PAPER ------------------------ */
 app.post('/upload', upload.array('files'), async (req, res) => {
   const { semester, description } = req.body;
   const subject = req.body.subject?.trim().toLowerCase();
@@ -57,37 +62,35 @@ app.post('/upload', upload.array('files'), async (req, res) => {
     const filesArr = [];
 
     for (const file of req.files) {
-      const ext        = path.extname(file.originalname).toLowerCase();
-      const inputPath  = file.path;
-      const beforeSize = fs.statSync(inputPath).size;
+      const ext       = path.extname(file.originalname).toLowerCase();
+      let inputPath   = file.path;
 
-      /* ── IMAGE compression ── */
+      // Compress images
       if (['.jpg', '.jpeg', '.png'].includes(ext)) {
         const tmp = inputPath.replace(ext, `_tmp${ext}`);
-
         await sharp(inputPath)
           .resize({ width: 1200 })
           .jpeg({ quality: 70 })
           .toFile(tmp);
 
-        const afterSize = fs.statSync(tmp).size;
-
-        if (afterSize < beforeSize) {
-          fs.renameSync(tmp, inputPath);
-          console.log(`🖼️  ${file.originalname}: ${beforeSize} → ${afterSize} bytes (saved)`);
-        } else {
-          fs.unlinkSync(tmp);
-          console.log(`🖼️  ${file.originalname}: ${beforeSize} → ${afterSize} bytes (discarded, larger)`);
-        }
+        // replace if compressed smaller
+        const beforeSize = fs.statSync(inputPath).size;
+        const afterSize  = fs.statSync(tmp).size;
+        if (afterSize < beforeSize) fs.renameSync(tmp, inputPath);
+        else fs.unlinkSync(tmp);
       }
 
-      /* ── PDF (no compression, keep original) ── */
-      if (ext === '.pdf') {
-        console.log(`📄 ${file.originalname}: PDF kept without compression (${beforeSize} bytes)`);
-      }
+      // Upload to Cloudinary
+      const cloudRes = await cloudinary.uploader.upload(inputPath, {
+        resource_type: ext === '.pdf' ? 'raw' : 'image',
+        folder: `jssia/${subject || 'misc'}`,
+      });
+
+      // Delete local file
+      fs.unlinkSync(inputPath);
 
       filesArr.push({
-        url: `/uploads/${file.filename}`,
+        url: cloudRes.secure_url,
         upvotes: 0,
         downvotes: 0,
       });
@@ -97,31 +100,27 @@ app.post('/upload', upload.array('files'), async (req, res) => {
 
     res.status(201).json({
       success: true,
-      message: '✅ Uploaded (images compressed if smaller)',
+      message: '✅ Uploaded to Cloudinary!',
       paper,
     });
-
   } catch (err) {
     console.error('❌ Upload error:', err);
     res.status(500).json({ success: false, message: '❌ Upload failed', error: err.message });
   }
 });
 
-/* --- Fetch Papers --------------------------------------------------- */
+/* ------------------------  FETCH PAPERS ------------------------ */
 app.get('/papers', async (req, res) => {
   const { subject, semester } = req.query;
   try {
     const filter = {};
-    if (subject)   filter.subject   = subject;
-    if (semester)  filter.semester  = semester;
+    if (subject)  filter.subject  = subject;
+    if (semester) filter.semester = semester;
 
     const papers = await Paper.find(filter).sort({ uploadedAt: -1 });
 
     const visible = papers
-      .map(p => ({
-        ...p.toObject(),
-        files: p.files.filter(f => f.downvotes < 3),
-      }))
+      .map(p => ({ ...p.toObject(), files: p.files.filter(f => f.downvotes < 3) }))
       .filter(p => p.files.length);
 
     res.json(visible);
@@ -130,7 +129,7 @@ app.get('/papers', async (req, res) => {
   }
 });
 
-/* --- Voting --------------------------------------------------------- */
+/* ------------------------  VOTING ------------------------ */
 app.put('/papers/:paperId/files/:index/upvote', async (req, res) => {
   try {
     const paper = await Paper.findById(req.params.paperId);
@@ -163,7 +162,7 @@ app.put('/papers/:paperId/files/:index/downvote', async (req, res) => {
   }
 });
 
-/* --- Feedback ------------------------------------------------------- */
+/* ------------------------  FEEDBACK ------------------------ */
 app.post('/api/feedback', async (req, res) => {
   const { message, email } = req.body;
   if (!message) return res.status(400).json({ success: false, message: 'Message is required' });
@@ -177,9 +176,9 @@ app.post('/api/feedback', async (req, res) => {
   }
 });
 
-/* ------------------------  🗄️  DATABASE  ------------------------ */
+/* ------------------------  DATABASE ------------------------ */
 mongoose.connect(process.env.MONGO_URI)
   .then(() => {
-    app.listen(PORT, () => console.log(`🚀  Backend ready on http://localhost:${PORT}`));
+    app.listen(PORT, () => console.log(`🚀 Backend ready on http://localhost:${PORT}`));
   })
   .catch(err => console.error('❌ MongoDB connection error:', err));
