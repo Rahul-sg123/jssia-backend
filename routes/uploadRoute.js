@@ -1,105 +1,108 @@
-const express = require('express');
-const multer = require('multer');
-const { v2: cloudinary } = require('cloudinary');
-const { CloudinaryStorage } = require('multer-storage-cloudinary');
-const axios = require('axios');
+const express  = require('express');
+const multer   = require('multer');
+const path     = require('path');
+const fs       = require('fs');
+const axios    = require('axios');
 const FormData = require('form-data');
-const Paper = require('../models/Paper');
+const sharp    = require('sharp');
+const { PDFDocument } = require('pdf-lib');
+const Paper    = require('../models/Paper');
+const mime     = require('mime-types');
+const { v2: cloudinary } = require('cloudinary');
 
 const router = express.Router();
 
-/* ────────── Cloudinary Config ────────── */
+/* ────────── Cloudinary config ────────── */
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-/* ────────── Multer Storage (Cloudinary) ────────── */
-const storage = new CloudinaryStorage({
-  cloudinary,
-  params: async (req, file) => {
-    let folder = 'jssia_papers';
-    let format = undefined;
-
-    if (file.mimetype.includes('pdf')) format = 'pdf';
-    else if (file.mimetype.includes('png')) format = 'png';
-    else if (file.mimetype.includes('jpeg') || file.mimetype.includes('jpg'))
-      format = 'jpg';
-
-    return {
-      folder,
-      resource_type: file.mimetype.includes('pdf') ? 'raw' : 'auto', // PDFs = raw, images = auto
-      format,
-      public_id: Date.now() + '-' + file.originalname,
-      transformation: file.mimetype.startsWith('image/')
-        ? [{ width: 1080, crop: 'limit', quality: 'auto' }]
-        : [],
-    };
+/* ────────── Multer storage ────────── */
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const dir = './uploads/';
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir);
+    cb(null, dir);
   },
+  filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname}`)
 });
-
 const upload = multer({ storage });
 
-/* ────────── Upload Endpoint ────────── */
-router.post('/upload', upload.array('files'), async (req, res) => {
-  const { subject, semester, description } = req.body;
-  const allFiles = req.files || [];
+/* ────────── Helpers ────────── */
+async function compressImage(filePath, ext) {
+  const outPath = ext === '.png'
+    ? filePath.replace(/\.png$/i, '_compressed.png')
+    : filePath.replace(/(\.\w+)$/, '_compressed.jpg');
 
-  if (!allFiles.length)
-    return res.status(400).json({ success: false, message: 'No files uploaded.' });
+  const original = fs.statSync(filePath).size;
+  const sharpPipe = sharp(filePath).resize({ width: 1080 });
 
-  try {
-    const saved = [];
+  ext === '.png'
+    ? await sharpPipe.png({ compressionLevel: 9 }).toFile(outPath)
+    : await sharpPipe.jpeg({ quality: 70 }).toFile(outPath);
 
-    for (const f of allFiles) {
-      console.log(`🔍 Uploaded to Cloudinary: ${f.originalname} (${f.mimetype})`);
+  const compressed = fs.statSync(outPath).size;
+  fs.unlinkSync(filePath);
+  return outPath;
+}
 
-      // Nudity check for images only
-      if (f.mimetype.startsWith('image/')) {
-        const form = new FormData();
-        form.append('media', f.path); // Cloudinary URL
-        form.append('models', 'nudity-2.0');
-        form.append('api_user', process.env.SIGHTENGINE_USER);
-        form.append('api_secret', process.env.SIGHTENGINE_SECRET);
+/* ────────── Upload endpoint ────────── */
+router.post(
+  '/upload',
+  upload.fields([{ name: 'files' }, { name: 'file' }]),
+  async (req, res) => {
+    const { subject, semester, description } = req.body;
+    const allFiles = [...(req.files?.files || []), ...(req.files?.file || [])];
 
-        const { data } = await axios.post('https://api.sightengine.com/1.0/check.json', form, {
-          headers: form.getHeaders(),
+    if (!allFiles.length)
+      return res.status(400).json({ success: false, message: 'No files uploaded.' });
+
+    try {
+      const saved = [];
+
+      for (const f of allFiles) {
+        let ext = path.extname(f.originalname).toLowerCase();
+        if (!ext) ext = `.${mime.extension(f.mimetype) || ''}`;
+        let fp = f.path;
+
+        // Compress images
+        if (['.jpg', '.jpeg', '.png'].includes(ext)) {
+          fp = await compressImage(fp, ext);
+        }
+
+        // Upload to Cloudinary
+        const result = await cloudinary.uploader.upload(fp, {
+          folder: 'jssia_papers',
+          resource_type: 'auto'
         });
 
-        if (data?.nudity?.raw > 0.6) {
-          console.log('🚫 Removed (nudity):', f.originalname);
-          // Delete from Cloudinary
-          await cloudinary.uploader.destroy(f.filename, { resource_type: 'image' });
-          continue; // skip saving this file
-        }
+        // Delete local file after upload
+        fs.unlinkSync(fp);
+
+        saved.push({
+          url: result.secure_url, // Cloudinary URL
+          upvotes: 0,
+          downvotes: 0
+        });
       }
 
-      // Save file info for MongoDB
-      saved.push({
-        url: f.path || f.secure_url, // Cloudinary URL
-        filename: f.filename,
-        upvotes: 0,
-        downvotes: 0,
+      if (!saved.length)
+        return res.status(400).json({ success: false, message: 'All files rejected.' });
+
+      const paper = await Paper.create({ subject, semester, description, files: saved });
+      res.status(201).json({
+        success: true,
+        message: '✅ Uploaded to Cloudinary',
+        paper
       });
+
+    } catch (e) {
+      console.error(e);
+      res.status(500).json({ success: false, message: 'Upload failed', error: e.message });
     }
-
-    if (!saved.length)
-      return res.status(400).json({ success: false, message: 'All files rejected.' });
-
-    // Save paper document to MongoDB
-    const paper = await Paper.create({
-      subject,
-      semester,
-      description,
-      files: saved,
-    });
-
-    res.status(201).json({ success: true, paper });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ success: false, message: 'Upload failed', error: e.message });
   }
-});
+);
 
 module.exports = router;
