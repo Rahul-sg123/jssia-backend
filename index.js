@@ -1,29 +1,27 @@
-
-const express   = require('express');
-const cors      = require('cors');
-const mongoose  = require('mongoose');
-const multer    = require('multer');
-const path      = require('path');
-const fs        = require('fs');
-const sharp     = require('sharp');
+require('dotenv').config();
+const express = require('express');
+const cors = require('cors');
+const mongoose = require('mongoose');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+const sharp = require('sharp');
 const cloudinary = require('cloudinary').v2;
 
 const Feedback = require('./models/Feedback');
-const Subject  = require('./models/Subject');
-const Paper    = require('./models/Paper');
+const Subject = require('./models/Subject');
+const Paper = require('./models/Paper');
 const subjectRoutes = require('./routes/subjectRoutes');
-const adminRoutes   = require('./routes/admin');
+const adminRoutes = require('./routes/admin');
 
-const app  = express();
+const app = express();
 const PORT = process.env.PORT || 5000;
 
 /* ------------------------  ⛑️  MIDDLEWARE  ------------------------ */
-app.use(
-  cors({
-    origin: ['http://localhost:3000', 'https://jssia.vercel.app'],
-    credentials: true,
-  })
-);
+app.use(cors({
+  origin: ['http://localhost:3000', 'https://jssia.vercel.app'],
+  credentials: true,
+}));
 app.options('*', cors());
 app.use(express.json());
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
@@ -31,7 +29,7 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 /* ------------------------  ☁️  Cloudinary Config ------------------------ */
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key:    process.env.CLOUDINARY_API_KEY,
+  api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
@@ -62,8 +60,8 @@ app.post('/upload', upload.array('files'), async (req, res) => {
     const filesArr = [];
 
     for (const file of req.files) {
-      const ext       = path.extname(file.originalname).toLowerCase();
-      let inputPath   = file.path;
+      const ext = path.extname(file.originalname).toLowerCase();
+      let inputPath = file.path;
 
       // Compress images
       if (['.jpg', '.jpeg', '.png'].includes(ext)) {
@@ -73,9 +71,8 @@ app.post('/upload', upload.array('files'), async (req, res) => {
           .jpeg({ quality: 70 })
           .toFile(tmp);
 
-        // replace if compressed smaller
         const beforeSize = fs.statSync(inputPath).size;
-        const afterSize  = fs.statSync(tmp).size;
+        const afterSize = fs.statSync(tmp).size;
         if (afterSize < beforeSize) fs.renameSync(tmp, inputPath);
         else fs.unlinkSync(tmp);
       }
@@ -86,7 +83,6 @@ app.post('/upload', upload.array('files'), async (req, res) => {
         folder: `jssia/${subject || 'misc'}`,
       });
 
-      // Delete local file
       fs.unlinkSync(inputPath);
 
       filesArr.push({
@@ -96,7 +92,12 @@ app.post('/upload', upload.array('files'), async (req, res) => {
       });
     }
 
-    const paper = await Paper.create({ semester, subject, description, files: filesArr });
+    const paper = await Paper.create({
+      semester: semester.toString(),
+      subject,
+      description,
+      files: filesArr,
+    });
 
     res.status(201).json({
       success: true,
@@ -114,17 +115,20 @@ app.get('/papers', async (req, res) => {
   const { subject, semester } = req.query;
   try {
     const filter = {};
-    if (subject)  filter.subject  = subject;
-    if (semester) filter.semester = semester;
+    if (subject) filter.subject = subject.toLowerCase();
+    if (semester) filter.semester = semester.toString();
 
     const papers = await Paper.find(filter).sort({ uploadedAt: -1 });
 
+    // Filter out files with >=3 downvotes
     const visible = papers
       .map(p => ({ ...p.toObject(), files: p.files.filter(f => f.downvotes < 3) }))
       .filter(p => p.files.length);
 
+    console.log(`📄 Returning ${visible.length} papers`);
     res.json(visible);
   } catch (err) {
+    console.error('Fetch papers error:', err);
     res.status(500).json({ message: 'Error fetching papers', error: err.message });
   }
 });
